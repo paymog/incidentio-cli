@@ -1,4 +1,4 @@
-// Cookie names we never persist — analytics/telemetry that only bloat the jar.
+// Cookie names we never persist — analytics/telemetry that only bloats jar.
 // incident.io's dashboard loads Segment, LaunchDarkly, Sentry, PostHog-style beacons.
 const JUNK_PREFIXES = [
   "ph_phc_",
@@ -83,11 +83,13 @@ export function xsrfHeader(jar: CookieJar): string | undefined {
 }
 
 // Heuristic for "does this jar look like a live browser session?". incident.io's
-// exact session-cookie name isn't documented and the HAR had cookies stripped, so we
-// accept any Laravel session-shaped cookie; the importer warns if none is present.
+// session cookie is named `aclax` (not *_session), with `authed_orgs` alongside;
+// we also accept the generic Laravel patterns in case the name changes.
 export function hasAuthCookies(jar: CookieJar): boolean {
   return Object.keys(jar).some(
     (n) =>
+      n === "aclax" ||
+      n === "authed_orgs" ||
       n.endsWith("_session") ||
       n.startsWith("remember_web_") ||
       n.toLowerCase().includes("incident"),

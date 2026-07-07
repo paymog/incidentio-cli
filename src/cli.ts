@@ -10,7 +10,7 @@ import { extractSession, hasAuthCookies } from "./auth/import.ts";
 // command's `auth` field decides which credential each one uses at run time.
 const commands = [...publicCommands, ...internalCommands];
 
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 
 type Flags = {
   values: Record<string, string>; // --key value  and  --key=value (path params)
@@ -161,7 +161,14 @@ function mask(key: string): string {
 }
 
 async function readSource(args: string[]): Promise<string> {
-  if (args.length === 0 || args[0] === "-") return await Bun.stdin.text();
+  if (args.length === 0 || args[0] === "-") {
+    // Reading a TTY blocks until EOF — tell the user how to finish, else it looks hung.
+    if (process.stdin.isTTY) {
+      console.error("Paste a curl command, HAR JSON, or cookie string, then press Ctrl-D to finish.");
+      console.error("(Or skip the paste:  pbpaste | incidentio auth import)");
+    }
+    return await Bun.stdin.text();
+  }
   const candidate = args[0]!;
   const file = Bun.file(candidate);
   if (await file.exists()) return await file.text();

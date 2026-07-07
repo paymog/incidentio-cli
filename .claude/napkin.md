@@ -34,6 +34,14 @@
   curl exactly (proves cookies+org header are sent correctly).
 - HARs from Chrome/Brave strip ALL cookies (both the array and the Cookie header). Codegen
   harvests endpoint *shapes* only; the session is imported via Copy-as-cURL (`auth import`).
+- incident.io's dashboard session cookie is named `aclax` (base64 Gorilla securecookie:
+  `<unix_ts>|<data>|<mac>`), NOT `*_session`. `authed_orgs` rides alongside. Copy-as-cURL
+  gives clean text values (browser sends clean base64, not binary — so the Brave-decrypt
+  binary I saw was a decryption artifact, not real). BUT captured tokens 401 even via raw
+  curl with full headers → likely session-token rotation (Gorilla can rotate per request),
+  so a copied token goes stale fast. Tooling is correct (client matches raw curl byte-for-byte).
+- `auth import` with no args reads stdin → blocks on TTY until Ctrl-D. Added an isTTY hint
+  so it doesn't look hung; `pbpaste | incidentio auth import` is the reliable path.
 - Resource is best derived from the TAG FILENAME, not the URL path top (schedule-replicas-v2.json paths start
   with /v2/schedules/... but belong to schedule-replicas).
 
