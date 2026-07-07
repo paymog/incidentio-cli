@@ -1,4 +1,6 @@
-import { API_BASE } from "../config.ts";
+import { API_BASE, DASHBOARD_BASE, ORIGIN, REFERER } from "../config.ts";
+import { mergeSetCookies, serializeJar, xsrfHeader, type CookieJar } from "../auth/cookies.ts";
+import { saveCreds } from "../auth/store.ts";
 import type { Command } from "../commands/types.ts";
 
 export type RequestOptions = {
@@ -13,7 +15,13 @@ export type HttpResponse = {
   text: string;
 };
 
-function buildUrl(command: Command, opts: RequestOptions): string {
+// Auth is resolved per-command: the public API takes a Bearer key, the dashboard's
+// internal API replays a browser session (cookies + org id header + XSRF).
+export type Auth =
+  | { mode: "bearer"; apiKey: string }
+  | { mode: "cookie"; cookies: CookieJar; org: string };
+
+function buildUrl(base: string, command: Command, opts: RequestOptions): string {
   let path = command.path;
   for (const param of command.pathParams) {
     const value = opts.pathValues[param];
@@ -25,7 +33,7 @@ function buildUrl(command: Command, opts: RequestOptions): string {
     }
     path = path.replace(`:${param}`, encodeURIComponent(value));
   }
-  const url = new URL(API_BASE + path);
+  const url = new URL(base + path);
   // append (not set): incident.io list filters repeat bracket keys,
   // e.g. mode[one_of]=standard&mode[one_of]=tutorial.
   for (const [k, v] of opts.query) url.searchParams.append(k, v);
@@ -34,17 +42,33 @@ function buildUrl(command: Command, opts: RequestOptions): string {
 
 export async function request(
   command: Command,
-  apiKey: string,
+  auth: Auth,
   opts: RequestOptions,
 ): Promise<HttpResponse> {
-  const url = buildUrl(command, opts);
+  const isCookie = auth.mode === "cookie";
+  const base = isCookie ? DASHBOARD_BASE : API_BASE;
+  const url = buildUrl(base, command, opts);
+
   const headers: Record<string, string> = {
     accept: "application/json",
-    authorization: `Bearer ${apiKey}`,
   };
+  if (auth.mode === "bearer") {
+    headers.authorization = `Bearer ${auth.apiKey}`;
+  } else {
+    // Laravel dashboard: Origin/Referer keep CORS/CSRF happy; the org id header
+    // scopes the request; the cookie jar carries the session.
+    headers.origin = ORIGIN;
+    headers.referer = REFERER;
+    headers.cookie = serializeJar(auth.cookies);
+    headers["x-incident-organisation-id"] = auth.org;
+  }
 
   let bodyInit: string | undefined;
   if (command.method !== "GET" && command.method !== "HEAD") {
+    if (auth.mode === "cookie") {
+      const xsrf = xsrfHeader(auth.cookies);
+      if (xsrf) headers["x-xsrf-token"] = xsrf;
+    }
     if (opts.body !== undefined) {
       headers["content-type"] = command.bodyContentType ?? "application/json";
       bodyInit =
@@ -55,10 +79,20 @@ export async function request(
   const resp = await fetch(url, { method: command.method, headers, body: bodyInit });
   const text = await resp.text();
 
+  // Persist rotated session cookies so the dashboard session stays warm.
+  if (auth.mode === "cookie") {
+    const setCookies = resp.headers.getSetCookie?.() ?? [];
+    if (setCookies.length && mergeSetCookies(auth.cookies, setCookies)) {
+      await saveCreds({ cookies: auth.cookies });
+    }
+  }
+
   if (resp.status === 401 || resp.status === 403) {
-    throw new Error(
-      `HTTP ${resp.status}: authentication failed. Check your API key and its scopes.\n${text.slice(0, 500)}`,
-    );
+    const hint =
+      auth.mode === "cookie"
+        ? "the dashboard session expired or is invalid — re-run `incidentio auth import <curl>` with a fresh cookie"
+        : "check your API key and its scopes";
+    throw new Error(`HTTP ${resp.status}: authentication failed — ${hint}.\n${text.slice(0, 500)}`);
   }
   if (resp.status < 200 || resp.status >= 300) {
     throw new Error(`HTTP ${resp.status} ${resp.statusText}\n${text}`);

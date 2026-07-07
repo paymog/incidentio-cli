@@ -21,6 +21,19 @@
   (List/Create/Show/Update/Delete/Destroy) to a single word; on within-resource collisions fall back to the full
   kebab suffix (e.g. catalog-types: `update-type` vs `update-type-schema`). Cross-resource dupes: append `-<method>`
   (e.g. heartbeat `ping-get` / `ping-post`).
+## Internal dashboard API (v0.2.0)
+- app.incident.io/api/* is the dashboard SPA's internal API. It REJECTS API keys:
+  `"Cannot use API keys to authenticate to internal APIs"` (401). Needs browser session
+  cookies + `x-incident-organisation-id` header (org id = 01G9XY4BZ7YGBPJ3K50NB30YXS for goldsky).
+  Same Laravel/XSRF model as blacksmith — ported cookies.ts/import.ts.
+- incident.io IDs are ULIDs (26-char Crockford base32, e.g. 01G9XY4BZ7YGBPJ3K50NB30YXS), NOT
+  UUIDs. The HAR codegen must match ULID (+ Slack IDs ^[TUB][0-9A-Z]{8,}$) to template :param.
+- The auth-gate varies: `policies`/`incidents` 401 on bad session; `saved_views`/`insights`
+  422 (validate first). To verify the cookie path, test against an auth-gated endpoint — a
+  fake cookie there gives 401 "No authorization material", and the CLI's response matches raw
+  curl exactly (proves cookies+org header are sent correctly).
+- HARs from Chrome/Brave strip ALL cookies (both the array and the Cookie header). Codegen
+  harvests endpoint *shapes* only; the session is imported via Copy-as-cURL (`auth import`).
 - Resource is best derived from the TAG FILENAME, not the URL path top (schedule-replicas-v2.json paths start
   with /v2/schedules/... but belong to schedule-replicas).
 

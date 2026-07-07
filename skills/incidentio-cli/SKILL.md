@@ -74,7 +74,8 @@ Dates are ISO-8601 UTC (`2026-06-04T00:00:00.000Z`). For "now" compute it:
 
 ## Command surface
 
-Run `incidentio list` for the authoritative set (172 commands across 52 resources). Grouped
+Run `incidentio list` for the authoritative set (~290 commands: ~170 public Bearer-API
+commands across 52 resources, plus ~120 internal/dashboard commands marked 🍪). Grouped
 highlights (`GET` unless noted):
 
 ### Incidents
@@ -165,8 +166,40 @@ incidentio ipallowlists show
 incidentio telemetry update --id <id> --body-json '{...}'
 ```
 
-## Recipes
+## Dashboard / internal API (🍪 — needs a browser session)
 
+These hit `app.incident.io/api/*`, which **rejects API keys** ("Cannot use API keys to
+authenticate to internal APIs"). They replay a logged-in browser session. Import one first:
+
+```sh
+# devtools → Network → right-click any /api/ request → Copy as cURL
+incidentio auth import '<paste curl>'        # or: pbpaste | incidentio auth import
+incidentio auth set-org 01G9XY4BZ7YGBPJ3K50NB30YXS   # x-incident-organisation-id (auto-captured from the curl if present)
+```
+
+Then commands marked 🍪 in `list` work. Highlights — things the public API can't do:
+
+```sh
+incidentio saved-views --query context=incidents     # saved filter views
+incidentio insights trends --query start_date=2026-06-01 --query end_date=2026-06-30
+incidentio insights custom-dashboards
+incidentio policies                                 # policy list
+incidentio policy-violations
+incidentio incident-timelines timeline --incident-timeline <id>            # full timeline
+incidentio incident-timelines activity-log --incident-timeline <id>        # activity log
+incidentio debriefs incident-debriefs --query incident_id=<id>
+incidentio incident-suggestions for-incident --query incident_id=<id>      # AI suggestions
+incidentio postmortems templates --query incident_id=<id>
+incidentio schedule-reports
+incidentio user-preferences
+incidentio identity self                  # who am I + scopes (dashboard identity)
+```
+
+A `401 "No authorization material"` on a 🍪 command means the session cookie isn't being
+recognized (wrong/expired) — re-import a fresh Copy-as-cURL. Org id resolves `--org` →
+`$INCIDENT_ORG_ID` → stored.
+
+## Recipes
 ### Validate your API key
 ```sh
 incidentio utilities identity | jq '.identity'
@@ -216,15 +249,26 @@ The generator discovers the REST tag set from `docs.incident.io/llms.txt`, fetch
 collisions (e.g. `catalog-types update-type` vs `update-type-schema`; `heartbeat ping` vs
 `ping-post`). After regenerating, rebuild (`bun run build`).
 
+Dashboard/internal commands come from a captured browser HAR via `bun run codegen:har
+<app.incident.io.har>`; they're cookie-authenticated and deduplicated against the public
+catalog. Regenerate the catalog with `bun run codegen` (public) after incident.io publishes
+new endpoints.
+
 ## Common issues
 
 ### `not authenticated`
 No key found via flag, env, or store. Run `incidentio auth set <key>` or `export INCIDENT_API_KEY=<key>`.
 
-### `HTTP 401` / `HTTP 403`
+### `HTTP 401` / `HTTP 403` (public/Bearer commands)
 The key is invalid/expired, or lacks the scope the endpoint requires (e.g. a read-only key
 calling a write verb). Check the key's scopes in **Settings → API keys**; scopes are fixed
 at creation — rotate or create a new key if you need more.
+
+### `needs a browser session` / `401 "No authorization material"` (🍪 dashboard commands)
+Dashboard commands (`app.incident.io/api/*`) reject API keys. They need a logged-in browser
+session: re-import via `incidentio auth import <curl>` (Copy-as-cURL from app.incident.io),
+and ensure the org id is set (`auth set-org` or `--org`). HARs from Chrome/Brave usually
+strip cookies — use Copy-as-cURL.
 
 ### `HTTP 422` with a validation message
 The body/query is the wrong shape (missing required field, bad enum, wrong type). The error

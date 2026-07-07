@@ -1,18 +1,25 @@
 #!/usr/bin/env bun
-import { commands } from "./commands/generated.ts";
+import { commands as publicCommands } from "./commands/generated.ts";
+import { internalCommands } from "./commands/generated-internal.ts";
 import { findCommand } from "./commands/types.ts";
-import { request, type RequestOptions } from "./http/client.ts";
-import { loadCreds, resolveApiKey, saveCreds } from "./auth/store.ts";
+import { request, type Auth, type RequestOptions } from "./http/client.ts";
+import { clearCreds, loadCreds, resolveApiKey, resolveDashboard, saveCreds } from "./auth/store.ts";
+import { extractSession, hasAuthCookies } from "./auth/import.ts";
 
-const VERSION = "0.1.0";
+// Public API (Bearer) + dashboard internal API (cookie) commands, merged. The
+// command's `auth` field decides which credential each one uses at run time.
+const commands = [...publicCommands, ...internalCommands];
+
+const VERSION = "0.2.0";
 
 type Flags = {
-  values: Record<string, string>; // --key value  and  --key=value
+  values: Record<string, string>; // --key value  and  --key=value (path params)
   query: [string, string][];
   set: [string, string][];
   bodyJson?: string;
   bodyFile?: string;
   apiKey?: string;
+  org?: string; // dashboard x-incident-organisation-id override
   raw: boolean;
 };
 
@@ -57,6 +64,9 @@ function parseFlags(args: string[]): Flags {
         break;
       case "api-key":
         flags.apiKey = takeValue();
+        break;
+      case "org":
+        flags.org = takeValue();
         break;
       default:
         // Path-param value, e.g. --id, --schedule-id, --alert-source-config-id.
@@ -138,13 +148,25 @@ function listCommands(filter: string): void {
       .map((p) => `--${p.replace(/_/g, "-")} <${p}>`)
       .join(" ");
     const q = c.query.length ? `  [?${c.query.join("|")}]` : "";
-    console.log(`${c.method.padEnd(6)} ${key}${params ? " " + params : ""}${q}`);
+    const auth = c.auth === "cookie" ? " 🍪" : "";
+    console.log(`${c.method.padEnd(6)} ${key}${params ? " " + params : ""}${q}${auth}`);
   }
-  console.log(`\n${commands.length} commands.`);
+  console.log(
+    `\n${commands.length} commands (${internalCommands.length} internal 🍪 need \`incidentio auth import\`).`,
+  );
 }
 
 function mask(key: string): string {
   return key.length <= 8 ? "•".repeat(key.length) : `${key.slice(0, 4)}••••${key.slice(-4)}`;
+}
+
+async function readSource(args: string[]): Promise<string> {
+  if (args.length === 0 || args[0] === "-") return await Bun.stdin.text();
+  const candidate = args[0]!;
+  const file = Bun.file(candidate);
+  if (await file.exists()) return await file.text();
+  // Treat the remaining args as literal pasted text (e.g. an inline curl).
+  return args.join(" ");
 }
 
 async function handleAuth(args: string[]): Promise<void> {
@@ -153,27 +175,59 @@ async function handleAuth(args: string[]): Promise<void> {
     case "set": {
       const key = args[1];
       if (!key) throw new Error("usage: incidentio auth set <api-key>");
-      await saveCreds(key);
+      await saveCreds({ apiKey: key });
       console.log(`saved API key (${mask(key)}).`);
+      break;
+    }
+    case "import": {
+      const source = await readSource(args.slice(1));
+      const session = extractSession(source);
+      if (Object.keys(session.cookies).length === 0) {
+        throw new Error(
+          "no cookies found (expected a curl command, HAR, or cookie string). Note: HARs exported from Chrome/Brave often strip cookies — use Copy-as-cURL instead.",
+        );
+      }
+      if (!hasAuthCookies(session.cookies)) {
+        console.error(
+          "warning: no session-shaped cookie found (no *_session / remember_web_* / incident*); the session may not authenticate.",
+        );
+      }
+      await saveCreds({ cookies: session.cookies, org: session.org });
+      const orgNote = session.org ? ` org=${session.org}` : "";
+      console.log(
+        `imported ${Object.keys(session.cookies).length} cookie(s): ${Object.keys(session.cookies).join(", ")}${orgNote}`,
+      );
+      if (!session.org) {
+        console.error("note: no x-incident-organisation-id found — run `incidentio auth set-org <org-id>`.");
+      }
+      break;
+    }
+    case "set-org": {
+      const org = args[1];
+      if (!org) throw new Error("usage: incidentio auth set-org <org-id>");
+      await saveCreds({ org });
+      console.log(`default org set to ${org}`);
       break;
     }
     case "status": {
       const creds = await loadCreds();
       if (!creds) {
-        console.log("not authenticated. Run `incidentio auth set <api-key>` or set INCIDENT_API_KEY.");
+        console.log("not authenticated. Run `incidentio auth set <api-key>` (public API) or `incidentio auth import <curl>` (dashboard).");
         process.exit(1);
       }
-      console.log(`authenticated. api key: ${mask(creds.apiKey)}`);
-      console.log(`updated: ${creds.updatedAt}`);
+      console.log(`api key:    ${creds.apiKey ? mask(creds.apiKey) : "(none)"}`);
+      console.log(`dashboard:  ${creds.cookies ? `${Object.keys(creds.cookies).length} cookies` : "(none)"}`);
+      console.log(`org:        ${creds.org ?? "(none — needed for dashboard commands)"}`);
+      console.log(`updated:    ${creds.updatedAt}`);
       break;
     }
     case "logout": {
-      await saveCreds("");
-      console.log("cleared credentials.");
+      await clearCreds();
+      console.log("cleared all credentials.");
       break;
     }
     default:
-      console.log("usage: incidentio auth <set|status|logout>");
+      console.log("usage: incidentio auth <set|import|set-org|status|logout>");
   }
 }
 
@@ -181,16 +235,21 @@ function usage(): void {
   console.log(`incidentio — incident.io API CLI (v${VERSION})
 
 Usage:
-  incidentio auth set <api-key>      store an API key
-  incidentio auth status             show auth state
-  incidentio auth logout             clear stored credentials
-  incidentio list [filter]           list available commands
-  incidentio <command...> [flags]    run a command (see \`incidentio list\`)
+  incidentio auth set <api-key>        store an API key (public API)
+  incidentio auth import <curl|har>    import a dashboard browser session
+  incidentio auth set-org <org-id>     set the dashboard organisation id
+  incidentio auth status               show auth state
+  incidentio auth logout               clear all credentials
+  incidentio list [filter]             list available commands
+  incidentio <command...> [flags]      run a command (see \`incidentio list\`)
 
-Auth resolution: --api-key flag → $INCIDENT_API_KEY → stored credential.
+Two auth modes: public API commands use a Bearer key (--api-key → $INCIDENT_API_KEY
+→ stored); internal/dashboard commands (marked 🍪 in \`list\`) replay a browser session
+imported via \`auth import\`, plus the organisation id (--org → $INCIDENT_ORG_ID → stored).
 
 Flags:
-  --api-key <key>      API key for this call (else $INCIDENT_API_KEY or stored)
+  --api-key <key>      API key for a public-API call
+  --org <org-id>       dashboard organisation id (x-incident-organisation-id)
   --<param> <value>    path params, e.g. --id, --schedule-id, --user-id
   --query key=value    query param (repeatable; supports bracket keys)
   --body-file <path>   JSON request body from file
@@ -236,7 +295,10 @@ async function main(): Promise<void> {
   }
 
   const flags = parseFlags(flagArgs);
-  const apiKey = await resolveApiKey(flags.apiKey);
+  const auth: Auth =
+    command.auth === "cookie"
+      ? { mode: "cookie", ...(await resolveDashboard(flags.org)) }
+      : { mode: "bearer", apiKey: await resolveApiKey(flags.apiKey) };
 
   const opts: RequestOptions = {
     pathValues: flags.values,
@@ -246,7 +308,7 @@ async function main(): Promise<void> {
       : await buildBody(flags),
   };
 
-  const resp = await request(command, apiKey, opts);
+  const resp = await request(command, auth, opts);
   printResult(resp.text, resp.contentType, flags.raw);
 }
 

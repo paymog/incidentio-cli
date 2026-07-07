@@ -31,17 +31,34 @@ Or run without building: `bun run src/cli.ts <command>`.
 
 ## Auth
 
-Create an API key at **Settings → API keys** (`app.incident.io/settings/api-keys`). A key's
-scopes are chosen at creation and fixed afterwards.
+Two auth modes — the CLI picks per command automatically:
+
+- **Public API** (`api.incident.io/v*`, Bearer key): most commands. Create a key at
+  **Settings → API keys** (`app.incident.io/settings/api-keys`); scopes are fixed at creation.
 
 ```sh
 incidentio auth set <api-key>     # store it (~/.config/incidentio/creds.json, chmod 600)
-incidentio auth status            # show masked key + last-updated
-incidentio auth logout            # clear stored credentials
+incidentio auth status            # show key, session, org
+incidentio auth logout            # clear all credentials
 ```
 
-Resolution order: `--api-key <key>` → `$INCIDENT_API_KEY` → stored credential. For CI, just
-`export INCIDENT_API_KEY=<key>`.
+Resolution: `--api-key <key>` → `$INCIDENT_API_KEY` → stored. For CI, `export INCIDENT_API_KEY=<key>`.
+
+- **Dashboard / internal API** (`app.incident.io/api/*`, browser session): commands marked 🍪
+  in `list`. incident.io rejects API keys for these ("Cannot use API keys to authenticate to
+  internal APIs"), so they replay a logged-in browser session — saved views, insights,
+  policies, incident timelines, AI suggestions, debriefs, and more. Import one:
+
+```sh
+# In a logged-in app.incident.io tab: devtools → Network → right-click any /api/ request →
+# Copy as cURL. Then:
+incidentio auth import '<paste curl>'        # or: pbpaste | incidentio auth import
+incidentio auth import ./app.incident.io.har # from a HAR (cookies often stripped — prefer cURL)
+incidentio auth set-org 01G9XY4BZ7YGBPJ3K50NB30YXS   # x-incident-organisation-id
+```
+
+Org id resolves `--org` → `$INCIDENT_ORG_ID` → stored. A `401` on a 🍪 command means the
+session expired — re-import a fresh cookie.
 
 ## Usage
 
@@ -88,6 +105,18 @@ incident.io publishes no single OpenAPI file; instead each resource tag has a fu
 `docs.incident.io/llms.txt`, fetches each tag spec, and derives a `<resource> <verb>` name per
 operation (CRUD verbs collapsed; collisions resolved, e.g. `catalog-types update-type` vs
 `update-type-schema`, `heartbeat ping` vs `ping-post`). After regenerating, rebuild.
+
+The internal/dashboard commands live in `src/commands/generated-internal.ts`, generated
+from a captured browser HAR of `app.incident.io/api/*`:
+
+```sh
+bun run codegen:har ~/Downloads/app.incident.io.har  # one or more HARs
+```
+
+These are cookie-authenticated and deduplicated against the public catalog (anything the
+public API can do stays Bearer). The HAR only yields endpoint *shapes*; the session is
+imported separately via `auth import` (HARs from Chrome/Brave usually strip cookies, so
+prefer Copy-as-cURL).
 
 ## Claude Code skill
 
