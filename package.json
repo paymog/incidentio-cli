@@ -1,0 +1,19 @@
+{
+  "name": "incidentio-cli",
+  "version": "0.1.0",
+  "description": "CLI for the incident.io API (Bearer auth, OpenAPI-generated commands)",
+  "type": "module",
+  "bin": {
+    "incidentio": "./src/cli.ts"
+  },
+  "scripts": {
+    "build": "bun build ./src/cli.ts --compile --outfile incidentio",
+    "build:all": "bun run scripts/build-all.ts",
+    "codegen": "bun run src/codegen/fromOpenapi.ts",
+    "start": "bun run src/cli.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}
