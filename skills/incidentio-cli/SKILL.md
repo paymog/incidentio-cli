@@ -1,6 +1,6 @@
 ---
 name: incidentio-cli
-description: Invoke the `incidentio` CLI to drive the incident.io REST API — incidents, actions, follow-ups, alerts/alert sources/routes, escalations & on-call schedules, catalog (types/entries/resources), custom fields, severities, incident types/roles/statuses/timestamps, status pages, workflows, users, teams, API keys, heartbeats, maintenance windows, IP allowlists, and telemetry. Auth is a Bearer API key (from Settings → API keys). Commands are generated from incident.io's official OpenAPI specs, so the full surface is covered. Use whenever a task needs incident.io data or actions, such as "list our incidents", "create an incident", "show the on-call schedule", "list severities/custom fields", "manage catalog entries", "rotate an API key", "send a heartbeat ping", or "list follow-ups on an incident".
+description: Invoke the `incidentio` CLI to drive the incident.io API — incidents, actions, follow-ups, alerts/alert sources/routes, escalations & on-call schedules, catalog (types/entries/resources), custom fields, severities, incident types/roles/statuses/timestamps, status pages (including creating and managing public pages, components, layout, subscribers, templates), workflows, users, teams, API keys, heartbeats, maintenance windows, and settings. Uses the public Bearer API (OpenAPI-generated commands) plus internal dashboard (cookie) commands generated from captured HARs, hand-curated internal endpoints, and a `raw` escape hatch for any un-codified path. Use whenever a task needs incident.io data or actions, such as "list our incidents", "create an incident", "show the on-call schedule", "build or manage a status page", "list status page subscribers", "tune a dashboard setting", or "hit an internal dashboard endpoint".
 ---
 
 # incident.io CLI
@@ -53,6 +53,7 @@ Commands are two tokens: **`<resource> <verb>`**. Output is pretty-printed JSON 
 | `--body-json '<json>'` | inline JSON request body |
 | `--set a.b=value` | set a body field, repeatable |
 | `--raw` | print the raw response, no JSON formatting |
+| `--auth cookie\|bearer` | (`raw` only) force the auth mode; otherwise inferred from the path |
 
 ### Bracket query filters
 
@@ -74,8 +75,9 @@ Dates are ISO-8601 UTC (`2026-06-04T00:00:00.000Z`). For "now" compute it:
 
 ## Command surface
 
-Run `incidentio list` for the authoritative set (~290 commands: ~170 public Bearer-API
-commands across 52 resources, plus ~120 internal/dashboard commands marked 🍪). Grouped
+Run `incidentio list` for the authoritative set (~300 commands: ~170 public Bearer-API
+commands across 52 resources, plus ~125 internal/dashboard commands marked 🍪, and the `raw`
+escape hatch). Grouped
 highlights (`GET` unless noted):
 
 ### Incidents
@@ -143,10 +145,33 @@ incidentio incident-timestamps list
 
 ### Status pages
 ```sh
+# Read (Bearer public API)
 incidentio status-pages list
+incidentio status-pages show --status-page-id <id>          # includes current_structure
 incidentio status-page-incidents list --query status_page_id=<id>
 incidentio status-page-maintenances list --query status_page_id=<id>
+
+# Manage the page itself (🍪 internal — the public API cannot create pages/components)
+incidentio status-pages create --body-json '{"name":"Acme","subpath":"acme","theme":"light"}'
+incidentio status-pages update --status-page-id <id> --body-json '{"name":"Acme","subpath":"acme","support_label":"Report a problem","allow_search_engine_indexing":false}'
+incidentio status-page-components create --body-json '{"name":"API","status_page_id":"<id>"}'
+incidentio status-page-components delete --id <component-id>
+incidentio status-page-structures create --body-json '{"status_page_id":"<id>","items":[
+  {"group":{"name":"Core","display_aggregated_uptime":true,"hidden":false,"components":[
+    {"component_id":"<id>","display_uptime":true,"hidden":false}]}},
+  {"component":{"component_id":"<id>","display_uptime":true,"hidden":false}}]}'
+
+# Audit subscribers / templates (🍪)
+incidentio status-page-subscriptions --query status_page_id=<id>
+incidentio status-page-templates --query status_page_id=<id>
 ```
+
+Notes: creating/branding a page and defining its components/layout is **internal-only** (cookie
+session); the public Bearer API only lists/shows and publishes incidents/maintenance. Public-page
+components are page-native objects (create them, then place them with `status-page-structures`),
+not a custom field (that model is for *internal* pages). `theme` is `light`|`dark`. Team plan allows
+**one** public page (a second `create` returns `422 exceeded your allowance`). Logo/favicon/brand
+color are uploads done in the dashboard.
 
 ### Users, teams, API keys, workflows
 ```sh
@@ -199,6 +224,29 @@ A `401 "No authorization material"` on a 🍪 command means the session cookie i
 recognized (wrong/expired) — re-import a fresh Copy-as-cURL. Org id resolves `--org` →
 `$INCIDENT_ORG_ID` → stored.
 
+## Raw requests & reverse-engineering new endpoints
+
+Not every endpoint is codified. `incidentio raw <METHOD> </path>` hits **any** endpoint with your
+stored creds — the fast path for probing and reverse-engineering internal routes:
+
+```sh
+incidentio raw GET  /api/status_pages                    # cookie inferred (/api/*)
+incidentio raw GET  /v2/incidents --query page_size=1    # bearer inferred (else)
+incidentio raw POST /api/status_pages --body-json '{}'   # probe: 422 names required fields
+incidentio raw PUT  /api/settings/self --body-json '{...}'   # tune a setting
+incidentio raw DELETE /api/status_pages/<id> --auth cookie
+```
+
+Auth is inferred (`/api/*` → cookie, otherwise bearer); override with `--auth cookie|bearer`.
+Inline any IDs directly in the path (`raw` does no `:param` substitution).
+
+**Codify a new endpoint (recipe):**
+1. Probe with an empty/partial body: `incidentio raw POST /api/<thing> --body-json '{}'`.
+2. Read the `422 validation_error` — the `source.field` / message names the required fields; retry
+   with an intentionally invalid enum value to learn allowed values.
+3. Add a `Command` to `src/commands/manual-internal.ts` (it's merged at load time and survives HAR
+   regeneration), then `bun run build`.
+
 ## Recipes
 ### Validate your API key
 ```sh
@@ -249,10 +297,13 @@ The generator discovers the REST tag set from `docs.incident.io/llms.txt`, fetch
 collisions (e.g. `catalog-types update-type` vs `update-type-schema`; `heartbeat ping` vs
 `ping-post`). After regenerating, rebuild (`bun run build`).
 
-Dashboard/internal commands come from a captured browser HAR via `bun run codegen:har
-<app.incident.io.har>`; they're cookie-authenticated and deduplicated against the public
-catalog. Regenerate the catalog with `bun run codegen` (public) after incident.io publishes
-new endpoints.
+Dashboard/internal commands are generated from captured browser HAR(s) via `bun run codegen:har
+<a.har> [b.har ...]`. It harvests GET **and** write endpoints (POST→`create`, PUT/PATCH→`update`,
+DELETE→`delete`), templates ULID/Slack IDs to `:param`, drops anything the public Bearer API already
+covers, and **overwrites** `generated-internal.ts` — so pass **every** HAR you want represented in a
+single invocation (e.g. `app.incident.io.har app.incident.io2.har app.incident.io3.har`). Hand-verified
+internal endpoints that appear in no HAR (e.g. status-page create/update/components/structures) live in
+`src/commands/manual-internal.ts` and are merged at load time, so they survive regeneration.
 
 ## Common issues
 

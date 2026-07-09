@@ -7,9 +7,10 @@ import type { Command } from "./types.ts";
 
 export const internalCommands: Command[] = [
   { "name": ["actions"], "method": "GET", "path": "/api/actions", "pathParams": [], "query": ["incident_id"], "auth": "cookie", "description": "GET /api/actions" },
-  { "name": ["ai","chat-openers"], "method": "GET", "path": "/api/ai/chat_openers", "pathParams": [], "query": ["surface","page_scope","incident_id"], "auth": "cookie", "description": "GET /api/ai/chat_openers" },
+  { "name": ["ai","chat-openers"], "method": "GET", "path": "/api/ai/chat_openers", "pathParams": [], "query": ["surface","page_scope"], "auth": "cookie", "description": "GET /api/ai/chat_openers" },
   { "name": ["ai","config"], "method": "GET", "path": "/api/ai/config", "pathParams": [], "query": [], "auth": "cookie", "description": "GET /api/ai/config" },
   { "name": ["alert-filter-fields"], "method": "GET", "path": "/api/alert_filter_fields", "pathParams": [], "query": [], "auth": "cookie", "description": "GET /api/alert_filter_fields" },
+  { "name": ["alert-route-matches","create"], "method": "POST", "path": "/api/alert_route_matches", "pathParams": [], "query": [], "auth": "cookie", "description": "POST /api/alert_route_matches" },
   { "name": ["alert-routes"], "method": "GET", "path": "/api/alert_routes", "pathParams": [], "query": [], "auth": "cookie", "description": "GET /api/alert_routes" },
   { "name": ["alert-schema"], "method": "GET", "path": "/api/alert_schema", "pathParams": [], "query": [], "auth": "cookie", "description": "GET /api/alert_schema" },
   { "name": ["alert-source-configs"], "method": "GET", "path": "/api/alert_source_configs", "pathParams": [], "query": [], "auth": "cookie", "description": "GET /api/alert_source_configs" },
@@ -108,8 +109,10 @@ export const internalCommands: Command[] = [
   { "name": ["severities"], "method": "GET", "path": "/api/severities", "pathParams": [], "query": [], "auth": "cookie", "description": "GET /api/severities" },
   { "name": ["slack-team-configs"], "method": "GET", "path": "/api/slack_team_configs", "pathParams": [], "query": [], "auth": "cookie", "description": "GET /api/slack_team_configs" },
   { "name": ["slack-team-configs","show"], "method": "GET", "path": "/api/slack_team_configs/:slack_team_config", "pathParams": ["slack_team_config"], "query": [], "auth": "cookie", "description": "GET /api/slack_team_configs/T02ETL2EU76" },
-  { "name": ["status-page-incidents"], "method": "GET", "path": "/api/status_page_incidents", "pathParams": [], "query": ["response_incident_id"], "auth": "cookie", "description": "GET /api/status_page_incidents" },
+  { "name": ["status-page-incidents"], "method": "GET", "path": "/api/status_page_incidents", "pathParams": [], "query": ["status_page_id"], "auth": "cookie", "description": "GET /api/status_page_incidents" },
   { "name": ["status-page-migrations"], "method": "GET", "path": "/api/status_page_migrations", "pathParams": [], "query": [], "auth": "cookie", "description": "GET /api/status_page_migrations" },
+  { "name": ["status-page-subscriptions"], "method": "GET", "path": "/api/status_page_subscriptions", "pathParams": [], "query": ["status_page_id","search","channel","page_size"], "auth": "cookie", "description": "GET /api/status_page_subscriptions" },
+  { "name": ["status-page-templates"], "method": "GET", "path": "/api/status_page_templates", "pathParams": [], "query": ["status_page_id"], "auth": "cookie", "description": "GET /api/status_page_templates" },
   { "name": ["status-pages"], "method": "GET", "path": "/api/status_pages", "pathParams": [], "query": [], "auth": "cookie", "description": "GET /api/status_pages" },
   { "name": ["streams","parent","show"], "method": "GET", "path": "/api/streams/parent/:parent_id", "pathParams": ["parent_id"], "query": [], "auth": "cookie", "description": "GET /api/streams/parent/01KWYSCDNGE4QRY16E1P7PPA0Q" },
   { "name": ["tasks"], "method": "GET", "path": "/api/tasks", "pathParams": [], "query": ["team_id"], "auth": "cookie", "description": "GET /api/tasks" },
