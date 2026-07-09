@@ -1,16 +1,17 @@
 #!/usr/bin/env bun
 import { commands as publicCommands } from "./commands/generated.ts";
 import { internalCommands } from "./commands/generated-internal.ts";
-import { findCommand } from "./commands/types.ts";
+import { manualInternalCommands } from "./commands/manual-internal.ts";
+import { findCommand, type Command } from "./commands/types.ts";
 import { request, type Auth, type RequestOptions } from "./http/client.ts";
 import { clearCreds, loadCreds, resolveApiKey, resolveDashboard, saveCreds } from "./auth/store.ts";
 import { extractSession, hasAuthCookies } from "./auth/import.ts";
 
 // Public API (Bearer) + dashboard internal API (cookie) commands, merged. The
 // command's `auth` field decides which credential each one uses at run time.
-const commands = [...publicCommands, ...internalCommands];
+const commands = [...publicCommands, ...internalCommands, ...manualInternalCommands];
 
-const VERSION = "0.2.1";
+const VERSION = "0.3.0";
 
 type Flags = {
   values: Record<string, string>; // --key value  and  --key=value (path params)
@@ -21,6 +22,7 @@ type Flags = {
   apiKey?: string;
   org?: string; // dashboard x-incident-organisation-id override
   raw: boolean;
+  authMode?: "cookie" | "bearer"; // --auth override for the `raw` command
 };
 
 function parseFlags(args: string[]): Flags {
@@ -68,6 +70,14 @@ function parseFlags(args: string[]): Flags {
       case "org":
         flags.org = takeValue();
         break;
+      case "auth": {
+        const v = takeValue();
+        if (v !== "cookie" && v !== "bearer") {
+          throw new Error(`--auth must be "cookie" or "bearer", got "${v}"`);
+        }
+        flags.authMode = v;
+        break;
+      }
       default:
         // Path-param value, e.g. --id, --schedule-id, --alert-source-config-id.
         flags.values[key.replace(/-/g, "_")] = takeValue();
@@ -152,7 +162,7 @@ function listCommands(filter: string): void {
     console.log(`${c.method.padEnd(6)} ${key}${params ? " " + params : ""}${q}${auth}`);
   }
   console.log(
-    `\n${commands.length} commands (${internalCommands.length} internal 🍪 need \`incidentio auth import\`).`,
+    `\n${commands.length} commands (${commands.filter((c) => c.auth === "cookie").length} internal 🍪 need \`incidentio auth import\`).`,
   );
 }
 
@@ -249,6 +259,7 @@ Usage:
   incidentio auth logout               clear all credentials
   incidentio list [filter]             list available commands
   incidentio <command...> [flags]      run a command (see \`incidentio list\`)
+  incidentio raw <METHOD> </path> [flags]  raw request to ANY endpoint (reverse-engineering)
 
 Two auth modes: public API commands use a Bearer key (--api-key → $INCIDENT_API_KEY
 → stored); internal/dashboard commands (marked 🍪 in \`list\`) replay a browser session
@@ -262,7 +273,40 @@ Flags:
   --body-file <path>   JSON request body from file
   --body-json '<json>' inline JSON request body
   --set a.b=value      set a body field (repeatable)
-  --raw                print raw response, no JSON formatting`);
+  --raw                print raw response, no JSON formatting
+  --auth cookie|bearer  auth mode for \`raw\` (else inferred: /api/* → cookie, else bearer)`);
+}
+
+// Raw escape hatch: hit ANY endpoint without a codified command. Invaluable for
+// reverse-engineering internal (cookie) paths that codegen hasn't captured — probe
+// with an empty body and read the 422 `validation_error` to learn required fields,
+// then codify it in commands/manual-internal.ts. Public paths (/v1|/v2/*) work too.
+async function handleRaw(args: string[]): Promise<void> {
+  const method = (args[0] ?? "").toUpperCase();
+  const path = args[1];
+  const allowed = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
+  if (!allowed.includes(method) || !path || !path.startsWith("/")) {
+    console.error(
+      "usage: incidentio raw <METHOD> </path> [--auth cookie|bearer] [--query k=v] [--body-json '{}'] [--body-file f] [--set a.b=v] [--raw]\n" +
+        "  METHOD one of GET|POST|PUT|PATCH|DELETE|HEAD; PATH must start with '/' (inline any ids).\n" +
+        "  auth defaults to cookie for /api/* paths, bearer otherwise.",
+    );
+    process.exit(1);
+  }
+  const flags = parseFlags(args.slice(2));
+  const mode = flags.authMode ?? (path.startsWith("/api/") ? "cookie" : "bearer");
+  const command: Command = { name: ["raw"], method, path, pathParams: [], query: [], auth: mode };
+  const auth: Auth =
+    mode === "cookie"
+      ? { mode: "cookie", ...(await resolveDashboard(flags.org)) }
+      : { mode: "bearer", apiKey: await resolveApiKey(flags.apiKey) };
+  const opts: RequestOptions = {
+    pathValues: {},
+    query: flags.query,
+    body: method === "GET" || method === "HEAD" ? undefined : await buildBody(flags),
+  };
+  const resp = await request(command, auth, opts);
+  printResult(resp.text, resp.contentType, flags.raw);
 }
 
 async function main(): Promise<void> {
@@ -282,6 +326,7 @@ async function main(): Promise<void> {
   }
   if (argv[0] === "auth") return handleAuth(argv.slice(1));
   if (argv[0] === "list") return listCommands(argv.slice(1).join(" "));
+  if (argv[0] === "raw") return handleRaw(argv.slice(1));
 
   // Split leading non-flag tokens (the command) from flags.
   const splitAt = argv.findIndex((a) => a.startsWith("-"));
