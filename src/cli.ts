@@ -11,7 +11,7 @@ import { extractSession, hasAuthCookies } from "./auth/import.ts";
 // command's `auth` field decides which credential each one uses at run time.
 const commands = [...publicCommands, ...internalCommands, ...manualInternalCommands];
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 
 type Flags = {
   values: Record<string, string>; // --key value  and  --key=value (path params)

@@ -105,8 +105,32 @@ incidentio alerts show --id <id>
 incidentio alerts resolve --id <id>
 incidentio alert-sources list
 incidentio alert-routes list
+incidentio alert-routes show --id <id>
+incidentio alert-routes update --id <id> --body-json '{...}'   # public API, no version field
 incidentio alert-events create-http --alert-source-config-id <id> --body-json '{...}'
 incidentio heartbeat ping --alert-source-config-id <id>   # GET ping
+
+# Alert route with incident-template custom-field binding (🍪 dashboard API)
+# The dashboard API requires a version field (optimistic concurrency — must be current+1).
+# Step 1: GET the current route and note the version:
+#   incidentio alert-routes show-route --id <route-id> | jq '.version'
+# Step 2: PUT with version+1 and the full route payload. Custom fields format:
+#   incident_template.custom_fields:[{
+#     custom_field_id:"<field-id>", merge_strategy:"first-wins",
+#     binding:{array_value:[{reference:"",value:"<option-id>",label:"<label>",sort_key:0}]}
+#   }]
+# merge_strategy: "first-wins" | "last-wins" | "append"
+incidentio alert-routes show-route --id <route-id>
+incidentio alert-routes update-route --id <route-id> --body-json '{
+  "version":4,
+  "name":"Route Name",
+  "incident_template":{
+    "custom_fields":[{
+      "custom_field_id":"<field-id>",
+      "merge_strategy":"first-wins",
+      "binding":{"array_value":[{"reference":"","value":"<option-id>","label":"<label>","sort_key":0}]}
+    }]
+  }}'
 ```
 
 ### Escalations & on-call schedules
@@ -124,23 +148,63 @@ incidentio schedule-replicas list --schedule-id <id>
 
 ### Catalog (service catalog as code)
 ```sh
+# Public API (Bearer)
 incidentio catalog-types list
+incidentio catalog-types show --id <type-id>            # includes .schema.attributes[].id
 incidentio catalog-types create --body-json '{...}'
 incidentio catalog-types update-type-schema --id <id> --body-json '{...}'
 incidentio catalog-entries list --query catalog_type_id=<id>
+incidentio catalog-entries create --body-json '{...}'   # simple entries
+incidentio catalog-entries update --id <id> --body-json '{...}'
 incidentio catalog-entries bulk-update-entries --body-json '{...}'
 incidentio catalog-resources list
+
+# Catalog entries with attribute_values (🍪 dashboard API — verified contract)
+# Required body: catalog_type_id, name, external_id, attribute_values (pass {} when none)
+# Attribute shapes:
+#   plain text:       {"<attr-id>":{"value":"some text"}}
+#   catalog-relation: {"<attr-id>":{"array_value":["<entry-id>",...]}}
+#   intentional clear (create only): {"<attr-id>":{"value":null}}
+# Get attribute IDs: incidentio catalog-types show --id <type-id> | jq '.catalog_type.schema.attributes[].id'
+incidentio catalog-entries create-entry --body-json '{
+  "catalog_type_id":"<type-id>",
+  "name":"My Service",
+  "external_id":"my-service",
+  "attribute_values":{
+    "<attr-id>":{"value":"production"},
+    "<rel-attr-id>":{"array_value":["<related-entry-id>"]}
+  }}'
+incidentio catalog-entries update-entry --id <entry-id> --body-json '{
+  "name":"My Service",
+  "attribute_values":{"<attr-id>":{"value":"staging"}}}'
 ```
 
 ### Config (custom fields, severities, types, roles, statuses, timestamps)
 ```sh
+# Public API (Bearer)
 incidentio custom-fields list
+incidentio custom-fields create --body-json '{...}'      # basic fields
 incidentio custom-field-options list --query custom_field_id=<id>
 incidentio severities list
 incidentio incident-types list
 incidentio incident-roles list
 incidentio incident-statuses list
 incidentio incident-timestamps list
+
+# Catalog-backed multi-select custom field (🍪 dashboard API — supports catalog_type_id,
+# field_mode, condition_groups not available in the public API)
+# Required body: name, description, field_type:"multi_select", catalog_type_id, field_mode,
+#   dynamic_options, cannot_be_unset, options, condition_groups
+incidentio custom-fields create-catalog-backed --body-json '{
+  "name":"Affected Services",
+  "description":"Which services are affected by this incident",
+  "field_type":"multi_select",
+  "catalog_type_id":"<catalog-type-id>",
+  "field_mode":"dashboard",
+  "dynamic_options":true,
+  "cannot_be_unset":false,
+  "options":[],
+  "condition_groups":[]}'
 ```
 
 ### Status pages
@@ -152,7 +216,20 @@ incidentio status-page-incidents list --query status_page_id=<id>
 incidentio status-page-maintenances list --query status_page_id=<id>
 
 # Manage the page itself (🍪 internal — the public API cannot create pages/components)
+# Simple page:
 incidentio status-pages create --body-json '{"name":"Acme","subpath":"acme","theme":"light"}'
+# Catalog-backed parent page with auto-generated sub-pages per catalog entry:
+incidentio status-pages create --body-json '{
+  "name":"Acme","subpath":"acme","theme":"light",
+  "parent_page_options":{
+    "page_type":"parent",
+    "split_by_catalog_type_id":"<catalog-type-id>",
+    "split_by_component_attribute_id":"<component-attr-id>",
+    "sub_pages":[
+      {"defined_by_catalog_entry_id":"<entry-id>","name":"Team A","subpath":"team-a"}
+    ]
+  }}'
+# Update — name, subpath, support_label are ALL required even for a single-field change:
 incidentio status-pages update --status-page-id <id> --body-json '{"name":"Acme","subpath":"acme","support_label":"Report a problem","allow_search_engine_indexing":false}'
 incidentio status-page-components create --body-json '{"name":"API","status_page_id":"<id>"}'
 incidentio status-page-components delete --id <component-id>
@@ -172,6 +249,10 @@ components are page-native objects (create them, then place them with `status-pa
 not a custom field (that model is for *internal* pages). `theme` is `light`|`dark`. Team plan allows
 **one** public page (a second `create` returns `422 exceeded your allowance`). Logo/favicon/brand
 color are uploads done in the dashboard.
+
+For catalog-backed parent pages: `split_by_catalog_type_id` and `split_by_component_attribute_id`
+identify which catalog type backs the sub-pages and which attribute on that type points to
+components; each `sub_pages` entry maps a catalog entry to a sub-page slug.
 
 ### Users, teams, API keys, workflows
 ```sh
@@ -281,6 +362,41 @@ Need the severity/status IDs first? `incidentio severities list` / `incidentio i
 ### Which verbs does a resource have?
 ```sh
 incidentio list schedules      # shows list/create/show/update/delete + nested schedule-entries/overrides/replicas
+incidentio list catalog-entries   # shows create/create-entry (🍪)/update/update-entry (🍪)/...
+```
+
+### Create a catalog entry with component relations (🍪)
+```sh
+# 1. Get the catalog type's attribute IDs
+incidentio catalog-types show --id <type-id> | jq '.catalog_type.schema.attributes[] | {id, name}'
+
+# 2. Create an entry with attribute values
+incidentio catalog-entries create-entry --body-json '{
+  "catalog_type_id":"<type-id>",
+  "name":"payments-service",
+  "external_id":"payments-service",
+  "attribute_values":{
+    "<team-attr-id>":{"array_value":["<team-catalog-entry-id>"]},
+    "<tier-attr-id>":{"value":"tier-1"}
+  }}'
+```
+
+### Update an alert route to bind a custom field (🍪)
+```sh
+# 1. Get current route and version
+VERSION=$(incidentio alert-routes show-route --id <route-id> | jq '.version')
+
+# 2. Update with custom field binding (version must be current+1)
+incidentio alert-routes update-route --id <route-id> --body-json '{
+  "version":'$((VERSION+1))',
+  "name":"My Route",
+  "incident_template":{
+    "custom_fields":[{
+      "custom_field_id":"<field-id>",
+      "merge_strategy":"first-wins",
+      "binding":{"array_value":[{"reference":"","value":"<option-id>","label":"P1 - Critical","sort_key":0}]}
+    }]
+  }}'
 ```
 
 ## Regenerate the command catalog
