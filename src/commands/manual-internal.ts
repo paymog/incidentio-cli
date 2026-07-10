@@ -124,9 +124,17 @@ export const manualInternalCommands: Command[] = [
       'Get catalog_type_id from `catalog-types list`.',
   },
   // ── Alert routes with incident-template custom-field bindings (dashboard) ───
-  // The internal /api/alert_routes/:id accepts the full route payload; the key
-  // difference from the public PUT is the mandatory version field (optimistic
-  // concurrency) and the incident_template.custom_fields binding format below.
+  // The internal /api/alert_routes/:id accepts the full route payload; key
+  // differences from the public PUT:
+  //   1. Mandatory `version` field (optimistic concurrency) — must be current+1.
+  //   2. escalation_config.escalation_targets entries must NOT include the `users`
+  //      member; the GET payload has an invalid users binding the PUT rejects.
+  //      The API silently restores `users` after a successful PUT.
+  //   3. incident_template.custom_fields supports two binding modes:
+  //      a) Static option: {custom_field_id,merge_strategy,binding:{array_value:[{reference:"",value:"<opt-id>",label,sort_key}]}}
+  //      b) Expression reference: {custom_field_id,merge_strategy,binding:{array_value:[{reference:"expressions[\"<expr-ref>\"]"}]}}
+  //   4. Expressions are declared in the route-level `expressions` array and used
+  //      by reference in custom-field bindings (see `alert-routes update-route-expr`).
   {
     name: ["alert-routes", "show-route"],
     method: "GET",
@@ -137,7 +145,9 @@ export const manualInternalCommands: Command[] = [
     description:
       'Show a single alert route via the dashboard API (cookie auth). ' +
       'Returns the full route payload including the current version number, which ' +
-      'must be incremented by 1 when updating (see `alert-routes update-route`).',
+      'must be incremented by 1 when updating (see `alert-routes update-route`). ' +
+      'NOTE: the returned escalation_config.escalation_targets entries contain a ' +
+      '`users` field that the PUT endpoint rejects — omit it when building the update body.',
   },
   {
     name: ["alert-routes", "update-route"],
@@ -148,11 +158,49 @@ export const manualInternalCommands: Command[] = [
     auth: "cookie",
     description:
       'Update an alert route via the dashboard API (cookie auth). ' +
-      'First GET the current route with `alert-routes show-route --id <id>` to capture version. ' +
-      'Body: full route payload with version set to current_version + 1 (optimistic concurrency). ' +
-      'Incident template custom fields format — ' +
+      'First GET with `alert-routes show-route --id <id>` to capture the current version. ' +
+      'Body: full route payload with version = current_version + 1 (optimistic concurrency). ' +
+      'REQUIRED: omit the `users` key from every entry in escalation_config.escalation_targets; ' +
+      'the GET payload carries an invalid users binding the PUT endpoint rejects (API restores it). ' +
+      'Static custom-field binding: ' +
       'incident_template.custom_fields:[{custom_field_id:"<id>",merge_strategy:"first-wins",' +
       'binding:{array_value:[{reference:"",value:"<option-id>",label:"<label>",sort_key:0}]}}]. ' +
-      'merge_strategy values: "first-wins" (use first alert match) | "last-wins" | "append".',
+      'Expression-reference binding (see update-route-expr for the full expression pattern): ' +
+      'incident_template.custom_fields:[{custom_field_id:"<id>",merge_strategy:"first-wins",' +
+      'binding:{array_value:[{reference:"expressions[\\"<expr-ref>\\"]"}]}}]. ' +
+      'merge_strategy values: "first-wins" | "last-wins" | "append".',
+  },
+  // ── Alert route catalog navigation expression (dashboard) ───────────────────
+  // Verified: a navigation expression in the route's `expressions` array can derive
+  // a component array by navigating from an alert Service attribute through the
+  // catalog "Components" relationship. This is the only way to auto-populate the
+  // Affected Components custom field from alert metadata without a static option list.
+  //
+  // The `expressions` array is part of the standard PUT /api/alert_routes/:id body;
+  // this command documents the exact expression shape and binding pattern.
+  {
+    name: ["alert-routes", "update-route-expr"],
+    method: "PUT",
+    path: "/api/alert_routes/:id",
+    pathParams: ["id"],
+    query: [],
+    auth: "cookie",
+    description:
+      'Update an alert route adding a catalog navigation expression that derives component ' +
+      'entries from an alert Service attribute, then binds the result to an incident custom field. ' +
+      'Same PUT endpoint as update-route; same version+1 and users-omission rules apply. ' +
+      'Add an entry to the route body\'s top-level `expressions` array: ' +
+      '{id:"<expr-id>",label:"<label>",reference:"<ref>", ' +
+      'returns:{type:"CatalogEntry[\\"<component-type-id>\\"]",array:true}, ' +
+      'root_reference:"alert.attributes.<service-alert-attribute-id>", ' +
+      'operations:[{operation_type:"navigate", ' +
+      'returns:{type:"CatalogEntry[\\"<component-type-id>\\"]",array:true}, ' +
+      'navigate:{reference:"catalog_attribute[\\"components\\"]",reference_label:"Components"}}]}. ' +
+      'Then bind it in incident_template.custom_fields: ' +
+      '{custom_field_id:"<affected-components-field-id>",merge_strategy:"first-wins", ' +
+      'binding:{array_value:[{reference:"expressions[\\"<ref>\\"]"}]}}. ' +
+      'Get service-alert-attribute-id from the alert source\'s attribute list; ' +
+      'get component-type-id from `catalog-types list`. ' +
+      'After a successful PUT the API echoes the expressions array with the expression intact.',
   },
 ];

@@ -111,24 +111,45 @@ incidentio alert-events create-http --alert-source-config-id <id> --body-json '{
 incidentio heartbeat ping --alert-source-config-id <id>   # GET ping
 
 # Alert route with incident-template custom-field binding (🍪 dashboard API)
-# The dashboard API requires a version field (optimistic concurrency — must be current+1).
-# Step 1: GET the current route and note the version:
-#   incidentio alert-routes show-route --id <route-id> | jq '.version'
-# Step 2: PUT with version+1 and the full route payload. Custom fields format:
-#   incident_template.custom_fields:[{
-#     custom_field_id:"<field-id>", merge_strategy:"first-wins",
-#     binding:{array_value:[{reference:"",value:"<option-id>",label:"<label>",sort_key:0}]}
-#   }]
+# Rules:
+#   1. version = current_version + 1 (optimistic concurrency — GET it first).
+#   2. OMIT the `users` key from every escalation_config.escalation_targets entry;
+#      the GET payload carries an invalid users binding that PUT rejects. API restores it.
+#   3. Custom-field bindings: static option OR navigation-expression reference.
+#      Static:     array_value:[{reference:"",value:"<opt-id>",label:"<label>",sort_key:0}]
+#      Expression: array_value:[{reference:"expressions[\"<expr-ref>\"]"}]
+#   4. Navigation expressions (derive component array from Service catalog attribute):
+#      Declare in top-level `expressions` array; bind by reference in custom_fields.
 # merge_strategy: "first-wins" | "last-wins" | "append"
 incidentio alert-routes show-route --id <route-id>
 incidentio alert-routes update-route --id <route-id> --body-json '{
   "version":4,
-  "name":"Route Name",
+  "escalation_config":{"escalation_targets":[
+    {"type":"schedule","id":"<sched-id>"}
+  ]},
   "incident_template":{
     "custom_fields":[{
       "custom_field_id":"<field-id>",
       "merge_strategy":"first-wins",
       "binding":{"array_value":[{"reference":"","value":"<option-id>","label":"<label>","sort_key":0}]}
+    }]
+  }}'
+# With a catalog navigation expression (auto-derive Affected Components from alert Service):
+incidentio alert-routes update-route-expr --id <route-id> --body-json '{
+  "version":5,
+  "expressions":[{
+    "id":"01EXPR001","label":"Affected Components","reference":"affected_components",
+    "returns":{"type":"CatalogEntry[\"<component-type-id>\"]","array":true},
+    "root_reference":"alert.attributes.<service-alert-attr-id>",
+    "operations":[{"operation_type":"navigate",
+      "returns":{"type":"CatalogEntry[\"<component-type-id>\"]","array":true},
+      "navigate":{"reference":"catalog_attribute[\"components\"]","reference_label":"Components"}}]
+  }],
+  "incident_template":{
+    "custom_fields":[{
+      "custom_field_id":"<affected-components-field-id>",
+      "merge_strategy":"first-wins",
+      "binding":{"array_value":[{"reference":"expressions[\"affected_components\"]"}]}
     }]
   }}'
 ```
@@ -383,13 +404,19 @@ incidentio catalog-entries create-entry --body-json '{
 
 ### Update an alert route to bind a custom field (🍪)
 ```sh
-# 1. Get current route and version
+# 1. GET current route — capture version and escalation_targets (you'll need to strip `users`)
 VERSION=$(incidentio alert-routes show-route --id <route-id> | jq '.version')
 
-# 2. Update with custom field binding (version must be current+1)
+# 2. PUT with version+1. Two critical rules:
+#    a) version = $VERSION + 1 (optimistic concurrency)
+#    b) omit `users` from every escalation_config.escalation_targets entry
+#       (the GET payload has an invalid users binding the PUT rejects; API restores it after PUT)
 incidentio alert-routes update-route --id <route-id> --body-json '{
   "version":'$((VERSION+1))',
   "name":"My Route",
+  "escalation_config":{"escalation_targets":[
+    {"type":"schedule","id":"<sched-id>"}
+  ]},
   "incident_template":{
     "custom_fields":[{
       "custom_field_id":"<field-id>",
@@ -398,6 +425,74 @@ incidentio alert-routes update-route --id <route-id> --body-json '{
     }]
   }}'
 ```
+
+### Derive Affected Components from alert Service via catalog navigation expression (🍪)
+
+A navigation expression lets an alert route auto-populate a catalog-backed custom field by
+navigating from an alert attribute (e.g. Service) through a catalog relationship (e.g. Components).
+
+```sh
+# 1. Find the IDs you need:
+#    - service-alert-attr-id: the alert source attribute ID for the Service field
+#    - component-type-id: catalog type ID for Components (incidentio catalog-types list)
+#    - affected-components-field-id: the incident custom field ID (incidentio custom-fields list)
+VERSION=$(incidentio alert-routes show-route --id <route-id> | jq '.version')
+
+# 2. PUT the route with an expression + expression-reference binding.
+#    Same rules: version+1, omit users from escalation_targets.
+incidentio alert-routes update-route-expr --id <route-id> --body-json '{
+  "version":'$((VERSION+1))',
+  "escalation_config":{"escalation_targets":[{"type":"schedule","id":"<sched-id>"}]},
+  "expressions":[{
+    "id":"<expr-id>",
+    "label":"Affected Components",
+    "reference":"affected_components",
+    "returns":{"type":"CatalogEntry[\"<component-type-id>\"]","array":true},
+    "root_reference":"alert.attributes.<service-alert-attr-id>",
+    "operations":[{
+      "operation_type":"navigate",
+      "returns":{"type":"CatalogEntry[\"<component-type-id>\"]","array":true},
+      "navigate":{"reference":"catalog_attribute[\"components\"]","reference_label":"Components"}
+    }]
+  }],
+  "incident_template":{
+    "custom_fields":[{
+      "custom_field_id":"<affected-components-field-id>",
+      "merge_strategy":"first-wins",
+      "binding":{"array_value":[{"reference":"expressions[\"affected_components\"]"}]}
+    }]
+  }}'
+# After a successful PUT the API echoes the expressions array back intact.
+```
+
+Notes:
+- `root_reference` points at the alert source attribute that holds a Service catalog entry.
+- `operations[0].navigate.reference` is the catalog attribute name on the Service type that
+  holds its component entries (verify via `incidentio catalog-types show --id <service-type-id>`).
+- The expression `reference` value becomes the key in `expressions["<reference>"]` binding.
+- The Affected Components custom field must be a catalog-backed `multi_select` created via
+  `custom-fields create-catalog-backed` (dashboard internal API) targeting the Component catalog type.
+
+### Status-page workflow action (⚠️ UI-only — workflow persistence not available in CLI)
+
+The workflow builder supports a `Create or update a status page sub-page incident` action.
+Its parameter sequence (verified in the UI, **not** capturable via `incidentio raw`):
+
+1. Status page (which page)
+2. Component custom field (which incident field drives component selection)
+3. Component impact level: `operational` | `degraded_performance` | `partial_outage` | `full_outage`
+4. Title — templated text
+5. Public incident status: `investigating` | `identified` | `monitoring`
+6. Message — templated text
+7. Auto-resolve (boolean)
+8. Resolution message
+9. Notify subscribers (boolean)
+
+**Workflow save (`POST /api/workflows`) was not captured** — the request shape for creating
+or updating workflows with this action type is unverified. Use the dashboard UI to create
+the workflow; use `incidentio workflows list` / `incidentio raw GET /api/workflows/:id` to
+inspect existing ones. Do not attempt to POST a new workflow via `incidentio raw` without a
+verified payload.
 
 ## Regenerate the command catalog
 

@@ -54,3 +54,9 @@
 - API base: `https://api.incident.io`. Paths in the spec already include `/v1`/`/v2`/`/v3`.
 - Rate limit 1200 req/min/key; 429 body names `retry_after`. Errors carry `request_id`.
 - List filters use bracket query keys (`status[one_of]=ABC`, repeatable). Use URLSearchParams.append, not set.
+## v0.5.0 Alert-Route Expression Findings (2026-07-10)
+- PUT /api/alert_routes/:id rejects any `users` key inside escalation_config.escalation_targets entries. Strip it before PUT; API silently restores it afterward.
+- Navigation expressions live in the route-level `expressions` array; they are NOT a separate endpoint.
+- Expression-reference binding in custom-field array_value: `{"reference":"expressions[\"<ref>\"]"}` — no `value` or `sort_key`.
+- Workflow save (POST /api/workflows) was NOT captured; do not fabricate a typed command for it.
+- Two commands now share PUT /api/alert_routes/:id: `update-route` (generic, existing) and `update-route-expr` (expression pattern). Both are intentional; the description is the typed contract.

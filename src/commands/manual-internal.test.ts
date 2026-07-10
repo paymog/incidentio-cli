@@ -217,3 +217,166 @@ describe("alert route update body construction", () => {
     expect((tmpl.custom_fields as unknown[]).length).toBe(1);
   });
 });
+// ── New v0.5.0 tests: navigation expression + users omission ─────────────
+
+describe("alert-routes update-route-expr command", () => {
+  test("update-route-expr command exists at internal PUT path", () => {
+    const cmd = findCommand(manualInternalCommands, ["alert-routes", "update-route-expr"]);
+    expect(cmd).toBeDefined();
+    expect(cmd!.method).toBe("PUT");
+    expect(cmd!.path).toBe("/api/alert_routes/:id");
+    expect(cmd!.auth).toBe("cookie");
+  });
+
+  test("update-route-expr description documents expressions array and navigate operation", () => {
+    const cmd = findCommand(manualInternalCommands, ["alert-routes", "update-route-expr"]);
+    const d = cmd!.description!;
+    expect(d).toContain("expressions");
+    expect(d).toContain("operation_type");
+    expect(d).toContain("navigate");
+    expect(d).toContain("root_reference");
+    expect(d).toContain("catalog_attribute");
+  });
+
+  test("update-route-expr description documents expression-reference binding in custom_fields", () => {
+    const cmd = findCommand(manualInternalCommands, ["alert-routes", "update-route-expr"]);
+    const d = cmd!.description!;
+    expect(d).toContain('expressions[\\"');
+    expect(d).toContain("array_value");
+    expect(d).toContain("custom_field_id");
+  });
+
+  test("update-route-expr description documents version+1 and users-omission rules", () => {
+    const cmd = findCommand(manualInternalCommands, ["alert-routes", "update-route-expr"]);
+    const d = cmd!.description!;
+    expect(d).toContain("version+1");
+    expect(d).toContain("users-omission");
+  });
+});
+
+describe("alert-routes users-omission requirement", () => {
+  test("update-route description explicitly documents users omission", () => {
+    const cmd = findCommand(manualInternalCommands, ["alert-routes", "update-route"]);
+    const d = cmd!.description!;
+    expect(d).toContain("users");
+    expect(d).toContain("escalation_config.escalation_targets");
+    expect(d).toContain("omit");
+  });
+
+  test("show-route description warns about users field in GET payload", () => {
+    const cmd = findCommand(manualInternalCommands, ["alert-routes", "show-route"]);
+    const d = cmd!.description!;
+    expect(d).toContain("users");
+    expect(d).toContain("omit");
+  });
+
+  test("users omission pattern: strip users key from escalation targets", () => {
+    // Simulate GET payload → strip users → ready for PUT
+    const getPayload = {
+      version: 5,
+      escalation_config: {
+        escalation_targets: [
+          { type: "schedule", id: "01SCHED1", users: [{ id: "01USER1", name: "Alice" }] },
+          { type: "user", id: "01USER2", users: [] },
+        ],
+      },
+    };
+    // Build PUT body: omit `users` from each target
+    const putTargets = getPayload.escalation_config.escalation_targets.map(
+      ({ users: _omitted, ...rest }) => rest,
+    );
+    expect(putTargets[0]).not.toHaveProperty("users");
+    expect(putTargets[1]).not.toHaveProperty("users");
+    expect(putTargets[0]).toHaveProperty("type", "schedule");
+    expect(putTargets[0]).toHaveProperty("id", "01SCHED1");
+    // version is incremented by 1
+    const putVersion = getPayload.version + 1;
+    expect(putVersion).toBe(6);
+  });
+});
+
+describe("catalog navigation expression payload shape", () => {
+  const COMPONENT_TYPE_ID = "01COMPTYPE123";
+  const SERVICE_ATTR_ID = "01SVCATTR456";
+  const EXPR_REF = "components";
+
+  test("navigation expression has required top-level fields", () => {
+    const expr = {
+      id: "01EXPR001",
+      label: "Components",
+      reference: EXPR_REF,
+      returns: { type: `CatalogEntry["${COMPONENT_TYPE_ID}"]`, array: true },
+      root_reference: `alert.attributes.${SERVICE_ATTR_ID}`,
+      operations: [
+        {
+          operation_type: "navigate",
+          returns: { type: `CatalogEntry["${COMPONENT_TYPE_ID}"]`, array: true },
+          navigate: {
+            reference: 'catalog_attribute["components"]',
+            reference_label: "Components",
+          },
+        },
+      ],
+    };
+    expect(expr.returns.array).toBe(true);
+    expect(expr.returns.type).toContain("CatalogEntry");
+    expect(expr.root_reference).toMatch(/^alert\.attributes\./);
+    expect(expr.operations).toHaveLength(1);
+    expect(expr.operations[0].operation_type).toBe("navigate");
+    expect(expr.operations[0].navigate.reference).toContain("catalog_attribute");
+  });
+
+  test("expression-reference binding uses expressions[] reference not a literal value", () => {
+    const binding = {
+      array_value: [{ reference: `expressions["${EXPR_REF}"]` }],
+    };
+    // Must not carry a literal value or sort_key — this is a pure reference
+    const item = binding.array_value[0] as Record<string, unknown>;
+    expect(item["reference"]).toBe('expressions["components"]');
+    expect(item).not.toHaveProperty("value");
+    expect(item).not.toHaveProperty("sort_key");
+  });
+
+  test("full route body wires expression and binding together", () => {
+    const exprRef = "affected_components";
+    const compTypeId = "01COMPTYPE123";
+    const svcAttrId = "01SVCATTR456";
+
+    const routeBody = {
+      version: 7,
+      expressions: [
+        {
+          id: "01EXPR001",
+          label: "Affected Components",
+          reference: exprRef,
+          returns: { type: `CatalogEntry["${compTypeId}"]`, array: true },
+          root_reference: `alert.attributes.${svcAttrId}`,
+          operations: [
+            {
+              operation_type: "navigate",
+              returns: { type: `CatalogEntry["${compTypeId}"]`, array: true },
+              navigate: { reference: 'catalog_attribute["components"]', reference_label: "Components" },
+            },
+          ],
+        },
+      ],
+      incident_template: {
+        custom_fields: [
+          {
+            custom_field_id: "01CF_AFFECTED_COMPONENTS",
+            merge_strategy: "first-wins",
+            binding: { array_value: [{ reference: `expressions["${exprRef}"]` }] },
+          },
+        ],
+      },
+    };
+
+    // Expression reference in custom field matches the expression's `reference` field
+    const cfBinding = routeBody.incident_template.custom_fields[0].binding.array_value[0];
+    expect(cfBinding.reference).toBe(`expressions["${routeBody.expressions[0].reference}"]`);
+    // Version is incremented
+    expect(routeBody.version).toBe(7);
+    // Expression returns an array
+    expect(routeBody.expressions[0].returns.array).toBe(true);
+  });
+});
