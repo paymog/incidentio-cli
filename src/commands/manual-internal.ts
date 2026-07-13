@@ -42,6 +42,20 @@ export const manualInternalCommands: Command[] = [
       "Update a status page. Body (required): name, subpath, support_label, allow_search_engine_indexing; plus optionals theme, date_view, display_uptime_mode, template_mode, *_disabled flags.",
   },
   {
+    name: ["status-pages", "update-summary-api"],
+    method: "POST",
+    path: "/api/status_pages/:status_page_id/action/update_summary_api",
+    pathParams: ["status_page_id"],
+    query: [],
+    auth: "cookie",
+    description:
+      "Enable/disable the Widget API for a status page. Body: { expose_status_summary_api: true|false }. " +
+      "When enabled, exposes an unauthenticated public summary of system status at <page-url>/api/v1/summary " +
+      "(a parent page returns every sub-page under `subpages`; append a sub-page slug for one sub-page). " +
+      "NOTE: the general `status-pages update` PUT silently ignores expose_status_summary_api (and other toggle " +
+      "fields) \u2014 it only writes name/subpath/support_label/allow_search_engine_indexing. Use this action endpoint.",
+  },
+  {
     name: ["status-page-components", "create"],
     method: "POST",
     path: "/api/status_page_components",
