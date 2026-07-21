@@ -3,7 +3,7 @@
 A CLI for the [incident.io](https://incident.io/) API. incident.io has a real public API
 keyed by Bearer tokens, so this talks to `api.incident.io` directly — no browser, no cookies.
 Every command is **generated from incident.io's official OpenAPI specs**, so the full
-documented surface (172 endpoints across 52 resources) is covered.
+documented surface (~179 public endpoints across 53 resources, plus internal dashboard commands) is covered.
 
 ## Install
 

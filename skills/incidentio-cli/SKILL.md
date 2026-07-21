@@ -75,8 +75,8 @@ Dates are ISO-8601 UTC (`2026-06-04T00:00:00.000Z`). For "now" compute it:
 
 ## Command surface
 
-Run `incidentio list` for the authoritative set (~300 commands: ~170 public Bearer-API
-commands across 52 resources, plus ~125 internal/dashboard commands marked 🍪, and the `raw`
+Run `incidentio list` for the authoritative set (~324 commands: ~179 public Bearer-API
+commands across 53 resources, plus ~145 internal/dashboard commands marked 🍪, and the `raw`
 escape hatch). Grouped
 highlights (`GET` unless noted):
 
@@ -262,6 +262,17 @@ incidentio status-page-structures create --body-json '{"status_page_id":"<id>","
 # Audit subscribers / templates (🍪)
 incidentio status-page-subscriptions --query status_page_id=<id>
 incidentio status-page-templates --query status_page_id=<id>
+
+# Retrospective status-page incident (Bearer) — bulk-import historical incidents
+incidentio status-page-incidents create-status-page-retrospective-incident --body-json '{
+  "status_page_id":"<id>",
+  "name":"Elevated API latency",
+  "idempotency_key":"historical-2021-08-17",
+  "updates":[
+    {"incident_status":"investigating","message":"Looking into it.","published_at":"2021-08-17T13:28:57Z"},
+    {"incident_status":"resolved","message":"Fixed.","published_at":"2021-08-17T14:00:00Z",
+     "component_statuses":[{"component_id":"<id>","component_status":"operational"}]}
+  ]}'
 ```
 
 Notes: creating/branding a page and defining its components/layout is **internal-only** (cookie
@@ -275,14 +286,30 @@ For catalog-backed parent pages: `split_by_catalog_type_id` and `split_by_compon
 identify which catalog type backs the sub-pages and which attribute on that type points to
 components; each `sub_pages` entry maps a catalog entry to a sub-page slug.
 
-### Users, teams, API keys, workflows
+### Users, teams, API keys, workflows, secrets
 ```sh
 incidentio users list --query email=<email>
 incidentio users show --id <id>
 incidentio teams list
 incidentio api-keys list
 incidentio api-keys rotate --id <id>
+# api-keys create/update accept optional `comments` string
+
+# Workflows (public Bearer CRUD)
 incidentio workflows list
+incidentio workflows show --id <id>
+incidentio workflows create --body-json '{...}'   # public shape — see OpenAPI
+incidentio workflows update --id <id> --body-json '{...}'
+
+# Secrets store (public Bearer — prefer this for scripting)
+# Create: {name, value, description?, owning_team_ids?}
+# Rotate: {value} — bumps version; value never returned (only last_four_chars)
+incidentio secrets list [--query team_ids=<id>]
+incidentio secrets show --id <id>                 # includes versions[] history
+incidentio secrets create --body-json '{"name":"pagerduty_token","value":"..."}'
+incidentio secrets rotate --id <id> --body-json '{"value":"new-secret"}'
+incidentio secrets update --id <id> --body-json '{"name":"pagerduty_token"}'
+incidentio secrets delete --id <id>
 ```
 
 ### Housekeeping
@@ -311,6 +338,15 @@ incidentio saved-views --query context=incidents     # saved filter views
 incidentio insights trends --query start_date=2026-06-01 --query end_date=2026-06-30
 incidentio insights custom-dashboards
 incidentio policies                                 # policy list
+incidentio policies update --id <id> --body-json '{...}'  # flip run_on_private_incidents etc.
+incidentio secrets list-internal                  # cookie twin of public secrets.*
+incidentio workflows triggers                     # alert.updated|attached, scheduled, ...
+incidentio workflows show-internal --id <id>      # expands webhook.send signing params
+incidentio workflows create-internal --body-json '{
+  "trigger":"alert.updated",
+  "workflow":{"name":"...","once_for":["alert"],"condition_groups":[],"steps":[],"expressions":[],
+    "runs_on_incident_modes":["standard"],"continue_on_step_error":false,
+    "runs_on_incidents":"newly_created","state":"draft","private_incident_scope":"none"}}'
 incidentio policy-violations
 incidentio incident-timelines timeline --incident-timeline <id>            # full timeline
 incidentio incident-timelines activity-log --incident-timeline <id>        # activity log
@@ -473,26 +509,68 @@ Notes:
 - The Affected Components custom field must be a catalog-backed `multi_select` created via
   `custom-fields create-catalog-backed` (dashboard internal API) targeting the Component catalog type.
 
-### Status-page workflow action (⚠️ UI-only — workflow persistence not available in CLI)
+### Secrets, signed webhooks, alert-triggered workflows
 
-The workflow builder supports a `Create or update a status page sub-page incident` action.
-Its parameter sequence (verified in the UI, **not** capturable via `incidentio raw`):
+```sh
+# List triggers (🍪) — includes alert.updated, alert.attached, scheduled
+incidentio workflows triggers | jq '.triggers[] | select(.name|test("alert|scheduled"))'
 
-1. Status page (which page)
-2. Component custom field (which incident field drives component selection)
-3. Component impact level: `operational` | `degraded_performance` | `partial_outage` | `full_outage`
-4. Title — templated text
-5. Public incident status: `investigating` | `identified` | `monitoring`
-6. Message — templated text
-7. Auto-resolve (boolean)
-8. Resolution message
-9. Notify subscribers (boolean)
+# Create an alert-triggered workflow (🍪). NOTE the split body: top-level `trigger`
+# string + nested `workflow` object. Public `workflows create` uses a flatter shape.
+incidentio workflows create-internal --body-json '{
+  "trigger":"alert.updated",
+  "workflow":{
+    "name":"Alert resolved webhook",
+    "once_for":["alert"],
+    "condition_groups":[],
+    "steps":[{
+      "id":"step1",
+      "name":"webhook.send",
+      "param_bindings":[
+        {"value":{"literal":"https://example.com/hook"}},
+        {"value":{"literal":"POST"}},
+        {"array_value":[{"literal":"Authorization: Bearer {{secrets.my_token}}"}]},
+        {"value":{"literal":"{\"ok\":true}"}},
+        {"value":{"literal":"<secret-id>"}},
+        {"value":{"literal":""}},
+        {"value":{"literal":"X-Signature"}}
+      ]
+    }],
+    "expressions":[],
+    "runs_on_incident_modes":["standard"],
+    "continue_on_step_error":false,
+    "runs_on_incidents":"newly_created",
+    "state":"draft",
+    "private_incident_scope":"none"
+  }}'
 
-**Workflow save (`POST /api/workflows`) was not captured** — the request shape for creating
-or updating workflows with this action type is unverified. Use the dashboard UI to create
-the workflow; use `incidentio workflows list` / `incidentio raw GET /api/workflows/:id` to
-inspect existing ones. Do not attempt to POST a new workflow via `incidentio raw` without a
-verified payload.
+# webhook.send param order (from show-internal): endpoint, method, headers
+# (TemplatedText plain_single_line_with_secrets), body, signing_secret (type Secret),
+# generated_signing_secret, signature_header_name (HMAC-SHA256).
+# Prefer public `secrets create` for the signing secret when you have a Bearer key.
+```
+
+### Opt a policy into private incidents (🍪)
+
+```sh
+# GET first — subjects/operations come back as expanded objects
+incidentio policies | jq '.policies[] | {id,name,run_on_private_incidents}'
+
+# PUT write shape differs: subject/operation are bare strings; follow_up needs due_date_config
+incidentio policies update --id <id> --body-json '{
+  "enabled":true,
+  "name":"...",
+  "description":"...",
+  "policy_type":"follow_up",
+  "conditions":[{"conditions":[{"subject":"incident.severity","operation":"gte",
+    "param_bindings":[{"value":{"literal":"<sev-id>"}}]}]}],
+  "requirements":{"conditions":[{"conditions":[{"subject":"follow_up.status","operation":"not_one_of",
+    "param_bindings":[{"array_value":[{"literal":"outstanding"}]}]}]}]},
+  "run_on_private_incidents":true,
+  "due_date_config":{"incident_timestamp_id":"<ts-id>","days":{"value":{"literal":"30"}},
+    "calculation_type":"seven_days"}
+}'
+```
 
 ## Regenerate the command catalog
 

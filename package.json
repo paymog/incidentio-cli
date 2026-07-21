@@ -1,6 +1,6 @@
 {
   "name": "incidentio-cli",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "CLI for the incident.io API (Bearer auth, OpenAPI-generated commands)",
   "type": "module",
   "bin": {
