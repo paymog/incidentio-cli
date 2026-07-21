@@ -31,6 +31,16 @@ A `401`/`403` means the key is invalid, revoked, or lacks the scope the endpoint
 (e.g. calling `incidents create` with a read-only key). Re-check the key's scopes in the
 dashboard.
 
+### Maestro / headless sandboxes
+
+When running inside a Maestro agent sandbox (or any headless CI-style environment),
+only the public Bearer API is available. `$INCIDENT_API_KEY` is pre-injected — do
+**not** run `auth set`. Cookie / dashboard (🍪) commands **will not work and never
+will**: no browser session cookie is injected into the sandbox, and none ever will
+be. Do not run `auth import`, do not ask the user for a cookie or cURL, and skip
+every command marked 🍪 in `incidentio list`. Stick to public Bearer-API commands.
+The dashboard section below is for local interactive use only.
+
 ## Usage
 
 ```sh
@@ -321,6 +331,9 @@ incidentio telemetry update --id <id> --body-json '{...}'
 ```
 
 ## Dashboard / internal API (🍪 — needs a browser session)
+
+> **Maestro sandboxes:** cookie auth is unavailable and will never be provided.
+> Skip this entire section in headless agent runs — public Bearer API only.
 
 These hit `app.incident.io/api/*`, which **rejects API keys** ("Cannot use API keys to
 authenticate to internal APIs"). They replay a logged-in browser session. Import one first:
