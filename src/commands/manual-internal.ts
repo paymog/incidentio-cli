@@ -217,4 +217,171 @@ export const manualInternalCommands: Command[] = [
       'get component-type-id from `catalog-types list`. ' +
       'After a successful PUT the API echoes the expressions array with the expression intact.',
   },
+
+  // ── Secrets store (dashboard internal API, changelog 2026-07-21) ────────────
+  // Public Bearer API mirrors these at /v2/secrets (secrets list/create/show/
+  // update/delete/rotate). Internal paths are identical shapes and useful when
+  // only a dashboard session is available. Value is write-only — responses expose
+  // last_four_chars + version history, never the secret itself.
+  // Create body: {name, value, description?, owning_team_ids?}.
+  // Update body: {name, description?, owning_team_ids?} (no value — use rotate).
+  // Rotate body: {value} → bumps version, keeps name.
+  // description is a TextDocument on some code paths; omit it (public API accepts
+  // plain string; internal create without description works).
+  {
+    name: ["secrets", "list-internal"],
+    method: "GET",
+    path: "/api/secrets",
+    pathParams: [],
+    query: ["page_size", "after", "team_ids"],
+    auth: "cookie",
+    description:
+      "List organisation/team secrets via dashboard API (name, version, last_four_chars, owning_team_ids). " +
+      "Filter with --query team_ids=<id>. Prefer public `secrets list` with a Bearer key when available.",
+  },
+  {
+    name: ["secrets", "show-internal"],
+    method: "GET",
+    path: "/api/secrets/:id",
+    pathParams: ["id"],
+    query: [],
+    auth: "cookie",
+    description:
+      "Show a secret + full version history (version, last_four_chars, created_by, created_at). " +
+      "Never returns the secret value.",
+  },
+  {
+    name: ["secrets", "create-internal"],
+    method: "POST",
+    path: "/api/secrets",
+    pathParams: [],
+    query: [],
+    auth: "cookie",
+    description:
+      'Create a secret. Body: {name, value, owning_team_ids?}. ' +
+      "Value is write-only. Response: secret {id,name,version,last_four_chars,owning_team_ids}.",
+  },
+  {
+    name: ["secrets", "update-internal"],
+    method: "PUT",
+    path: "/api/secrets/:id",
+    pathParams: ["id"],
+    query: [],
+    auth: "cookie",
+    description:
+      "Update secret metadata. Body: {name, owning_team_ids?}. Does not change the value — use rotate.",
+  },
+  {
+    name: ["secrets", "rotate-internal"],
+    method: "POST",
+    path: "/api/secrets/:id/actions/rotate",
+    pathParams: ["id"],
+    query: [],
+    auth: "cookie",
+    description:
+      "Rotate a secret to a new value (bumps version). Body: {value}. " +
+      "Prior versions remain in show.versions for audit; value itself is never returned.",
+  },
+  {
+    name: ["secrets", "delete-internal"],
+    method: "DELETE",
+    path: "/api/secrets/:id",
+    pathParams: ["id"],
+    query: [],
+    auth: "cookie",
+    description: "Delete a secret and its version history.",
+  },
+
+  // ── Workflows (dashboard internal API, changelog 2026-07-21) ────────────────
+  // Public Bearer CRUD exists at /v2/workflows. The dashboard API is richer:
+  //   - GET /api/workflows/triggers lists every trigger name (incl. new
+  //     alert.updated / alert.attached / scheduled).
+  //   - GET show expands webhook.send step params: headers type
+  //     TemplatedText["plain_single_line_with_secrets"], plus signing_secret
+  //     (type Secret), generated_signing_secret, signature_header_name.
+  //   - POST body is split: top-level `trigger` (string name) + `workflow` object
+  //     (name, once_for, condition_groups, steps, expressions, state, ...).
+  //     Trigger is NOT inside workflow. once_for is an array of engine keys
+  //     (e.g. ["alert"] or ["incident","alert.id"]).
+  {
+    name: ["workflows", "triggers"],
+    method: "GET",
+    path: "/api/workflows/triggers",
+    pathParams: [],
+    query: [],
+    auth: "cookie",
+    description:
+      "List workflow triggers. Notable names: alert.updated (alert created/changed), " +
+      "alert.attached, scheduled (recurring), incident.updated, manual, escalation.created, ... " +
+      "Each entry: {name, label, icon, group_label}.",
+  },
+  {
+    name: ["workflows", "list-internal"],
+    method: "GET",
+    path: "/api/workflows",
+    pathParams: [],
+    query: [],
+    auth: "cookie",
+    description:
+      "List workflows via the dashboard API (slim steps). Prefer public `workflows list` with Bearer when available.",
+  },
+  {
+    name: ["workflows", "show-internal"],
+    method: "GET",
+    path: "/api/workflows/:id",
+    pathParams: ["id"],
+    query: [],
+    auth: "cookie",
+    description:
+      "Show a workflow with full step param schemas. webhook.send exposes: endpoint, method, " +
+      'headers (TemplatedText plain_single_line_with_secrets — secret refs allowed), body, ' +
+      "signing_secret (type Secret — org secret id or generated), generated_signing_secret, " +
+      "signature_header_name (HMAC-SHA256 header).",
+  },
+  {
+    name: ["workflows", "create-internal"],
+    method: "POST",
+    path: "/api/workflows",
+    pathParams: [],
+    query: [],
+    auth: "cookie",
+    description:
+      'Create a workflow. Body shape differs from the public API: ' +
+      '{trigger:"<trigger-name>", workflow:{name, once_for, condition_groups, steps, expressions, ' +
+      'runs_on_incident_modes, continue_on_step_error, runs_on_incidents, state, private_incident_scope, ...}}. ' +
+      '`trigger` is TOP-LEVEL (not inside workflow). once_for is engine keys e.g. ["alert"] or ["incident"]. ' +
+      'New triggers: "alert.updated", "alert.attached", "scheduled". ' +
+      'Webhook step name "webhook.send"; bind signing via param_bindings on signing_secret / ' +
+      "generated_signing_secret / signature_header_name. state: active|disabled|draft|error.",
+  },
+  {
+    name: ["workflows", "delete-internal"],
+    method: "DELETE",
+    path: "/api/workflows/:id",
+    pathParams: ["id"],
+    query: [],
+    auth: "cookie",
+    description: "Delete a workflow via the dashboard API.",
+  },
+
+  // ── Policies: run on private incidents (changelog 2026-07-21) ───────────────
+  // GET /api/policies already generated. New field run_on_private_incidents (bool,
+  // default false). PUT accepts a simplified write shape — subjects/operations are
+  // bare strings (references/values), not the expanded GET objects.
+  {
+    name: ["policies", "update"],
+    method: "PUT",
+    path: "/api/policies/:id",
+    pathParams: ["id"],
+    query: [],
+    auth: "cookie",
+    description:
+      "Update a policy, including run_on_private_incidents. Required body: " +
+      "enabled, name, description, policy_type, conditions, requirements; optional " +
+      "run_on_private_incidents (bool, default false), due_date_config (required for follow_up type). " +
+      "Write shape differs from GET: each condition uses subject:<reference string>, " +
+      'operation:<value string>, param_bindings:[{value:{literal}}|{array_value:[{literal}]}]. ' +
+      'due_date_config: {incident_timestamp_id, days:{value:{literal:"<n>"}}, calculation_type}. ' +
+      "GET first, simplify subjects/operations to strings, flip run_on_private_incidents, PUT back.",
+  },
 ];

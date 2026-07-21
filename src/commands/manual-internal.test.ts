@@ -380,3 +380,185 @@ describe("catalog navigation expression payload shape", () => {
     expect(routeBody.expressions[0].returns.array).toBe(true);
   });
 });
+
+// ── Changelog 2026-07-21: secrets / workflows / policies ──────────────────
+
+describe("secrets internal commands", () => {
+  test("CRUD + rotate commands exist at /api/secrets", () => {
+    const list = findCommand(manualInternalCommands, ["secrets", "list-internal"]);
+    expect(list?.method).toBe("GET");
+    expect(list?.path).toBe("/api/secrets");
+    expect(list?.auth).toBe("cookie");
+    expect(list?.query).toContain("team_ids");
+
+    const create = findCommand(manualInternalCommands, ["secrets", "create-internal"]);
+    expect(create?.method).toBe("POST");
+    expect(create?.path).toBe("/api/secrets");
+    expect(create?.description).toContain("name");
+    expect(create?.description).toContain("value");
+
+    const show = findCommand(manualInternalCommands, ["secrets", "show-internal"]);
+    expect(show?.path).toBe("/api/secrets/:id");
+    expect(show?.pathParams).toEqual(["id"]);
+
+    const rotate = findCommand(manualInternalCommands, ["secrets", "rotate-internal"]);
+    expect(rotate?.method).toBe("POST");
+    expect(rotate?.path).toBe("/api/secrets/:id/actions/rotate");
+    expect(rotate?.description).toContain("{value}");
+
+    const update = findCommand(manualInternalCommands, ["secrets", "update-internal"]);
+    expect(update?.method).toBe("PUT");
+    expect(update?.description).toContain("rotate");
+
+    const del = findCommand(manualInternalCommands, ["secrets", "delete-internal"]);
+    expect(del?.method).toBe("DELETE");
+  });
+
+  test("internal secrets names do not collide with public secrets verbs", () => {
+    for (const verb of ["list", "create", "show", "update", "delete", "rotate"]) {
+      expect(findCommand(manualInternalCommands, ["secrets", verb])).toBeUndefined();
+    }
+  });
+});
+
+describe("workflows internal commands", () => {
+  test("triggers list documents alert + scheduled triggers", () => {
+    const cmd = findCommand(manualInternalCommands, ["workflows", "triggers"]);
+    expect(cmd?.method).toBe("GET");
+    expect(cmd?.path).toBe("/api/workflows/triggers");
+    expect(cmd?.auth).toBe("cookie");
+    const d = cmd!.description!;
+    expect(d).toContain("alert.updated");
+    expect(d).toContain("alert.attached");
+    expect(d).toContain("scheduled");
+  });
+
+  test("create-internal documents split trigger + workflow body", () => {
+    const cmd = findCommand(manualInternalCommands, ["workflows", "create-internal"]);
+    expect(cmd?.method).toBe("POST");
+    expect(cmd?.path).toBe("/api/workflows");
+    const d = cmd!.description!;
+    expect(d).toContain("trigger");
+    expect(d).toContain("workflow");
+    expect(d).toContain("TOP-LEVEL");
+    expect(d).toContain("webhook.send");
+    expect(d).toContain("signing_secret");
+  });
+
+  test("show-internal documents webhook signing params", () => {
+    const cmd = findCommand(manualInternalCommands, ["workflows", "show-internal"]);
+    const d = cmd!.description!;
+    expect(d).toContain("signing_secret");
+    expect(d).toContain("generated_signing_secret");
+    expect(d).toContain("signature_header_name");
+    expect(d).toContain("plain_single_line_with_secrets");
+  });
+
+  test("list/delete internal verbs exist", () => {
+    expect(findCommand(manualInternalCommands, ["workflows", "list-internal"])?.path).toBe(
+      "/api/workflows",
+    );
+    expect(findCommand(manualInternalCommands, ["workflows", "delete-internal"])?.method).toBe(
+      "DELETE",
+    );
+  });
+});
+
+describe("policies update command", () => {
+  test("update documents run_on_private_incidents and write-shape differences", () => {
+    const cmd = findCommand(manualInternalCommands, ["policies", "update"]);
+    expect(cmd?.method).toBe("PUT");
+    expect(cmd?.path).toBe("/api/policies/:id");
+    expect(cmd?.auth).toBe("cookie");
+    const d = cmd!.description!;
+    expect(d).toContain("run_on_private_incidents");
+    expect(d).toContain("enabled");
+    expect(d).toContain("due_date_config");
+    expect(d).toContain("subject");
+    expect(d).toContain("operation");
+  });
+});
+
+describe("workflow create body construction", () => {
+  test("split trigger/workflow payload shape", () => {
+    // Dashboard POST requires top-level trigger + workflow object (trigger NOT nested).
+    const body = {
+      trigger: "alert.updated",
+      workflow: {
+        name: "Alert webhook",
+        once_for: ["alert"],
+        condition_groups: [],
+        steps: [
+          {
+            id: "step1",
+            name: "webhook.send",
+            param_bindings: [
+              { value: { literal: "https://example.com/hook" } },
+              { value: { literal: "POST" } },
+              { array_value: [{ literal: "Authorization: Bearer {{secrets.my_token}}" }] },
+              { value: { literal: '{"ok":true}' } },
+              { value: { literal: "01SECRETID" } }, // signing_secret
+              { value: { literal: "" } }, // generated_signing_secret
+              { value: { literal: "X-Signature" } }, // signature_header_name
+            ],
+          },
+        ],
+        expressions: [],
+        runs_on_incident_modes: ["standard"],
+        continue_on_step_error: false,
+        runs_on_incidents: "newly_created",
+        state: "draft",
+        private_incident_scope: "none",
+      },
+    };
+    expect(body.trigger).toBe("alert.updated");
+    expect(body.workflow).not.toHaveProperty("trigger");
+    expect(body.workflow.steps[0].name).toBe("webhook.send");
+    expect(body.workflow.steps[0].param_bindings).toHaveLength(7);
+  });
+});
+
+describe("policy update body construction", () => {
+  test("simplifies GET condition objects to write strings", () => {
+    const getCondition = {
+      subject: { label: "Incident → Severity", reference: "incident.severity" },
+      operation: { label: "is at least", value: "gte" },
+      param_bindings: [{ value: { label: "Major", literal: "01SEV", value: "01SEV" } }],
+    };
+    const writeCondition = {
+      subject:
+        typeof getCondition.subject === "object"
+          ? getCondition.subject.reference
+          : getCondition.subject,
+      operation:
+        typeof getCondition.operation === "object"
+          ? getCondition.operation.value
+          : getCondition.operation,
+      param_bindings: getCondition.param_bindings.map((b) => ({
+        value: { literal: b.value.literal },
+      })),
+    };
+    expect(writeCondition).toEqual({
+      subject: "incident.severity",
+      operation: "gte",
+      param_bindings: [{ value: { literal: "01SEV" } }],
+    });
+
+    const body = {
+      enabled: true,
+      name: "Follow-ups",
+      description: "desc",
+      policy_type: "follow_up",
+      conditions: [{ conditions: [writeCondition] }],
+      requirements: { conditions: [] },
+      run_on_private_incidents: true,
+      due_date_config: {
+        incident_timestamp_id: "01TS",
+        days: { value: { literal: "30" } },
+        calculation_type: "seven_days",
+      },
+    };
+    expect(body.run_on_private_incidents).toBe(true);
+    expect(body.due_date_config.days.value.literal).toBe("30");
+  });
+});

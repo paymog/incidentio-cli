@@ -58,5 +58,18 @@
 - PUT /api/alert_routes/:id rejects any `users` key inside escalation_config.escalation_targets entries. Strip it before PUT; API silently restores it afterward.
 - Navigation expressions live in the route-level `expressions` array; they are NOT a separate endpoint.
 - Expression-reference binding in custom-field array_value: `{"reference":"expressions[\"<ref>\"]"}` — no `value` or `sort_key`.
-- Workflow save (POST /api/workflows) was NOT captured; do not fabricate a typed command for it.
+- Workflow create (POST /api/workflows) body is `{trigger:"<name>", workflow:{...}}` — trigger is TOP-LEVEL, not nested. Verified 2026-07-21.
 - Two commands now share PUT /api/alert_routes/:id: `update-route` (generic, existing) and `update-route-expr` (expression pattern). Both are intentional; the description is the typed contract.
+
+## Changelog 2026-07-21 discovery
+- New public OpenAPI tag: `secrets-v2` → `/v2/secrets` CRUD + rotate. codegen picks it up.
+- Also new public: `POST /v2/status_page_retrospective_incidents` (create retrospective SP incident).
+- `incident-attachments` create now accepts `resource_type: "arbitrary_url"` (+ title/url/emoji).
+- Catalog types gained `owning_team_ids` on create/update payloads (team-owned catalog types).
+- API keys create/update gained `comments` field.
+- Internal secrets: `/api/secrets` same shape as public; create `{name,value}`; rotate `{value}`; show returns versions[].
+- Internal workflow triggers: GET `/api/workflows/triggers` includes `alert.updated`, `alert.attached`, `scheduled`.
+- webhook.send step params: headers type `TemplatedText["plain_single_line_with_secrets"]`; signing via `signing_secret` (Secret), `generated_signing_secret`, `signature_header_name` (HMAC-SHA256).
+- Policies GET/PUT now carry `run_on_private_incidents` (bool). PUT write shape: subject/operation as bare strings; follow_up needs due_date_config `{incident_timestamp_id, days:{value:{literal}}, calculation_type}`.
+- Public secrets commands shadow if internal reuse same names — use `*-internal` suffix for cookie variants.
+- Insights MTTR graph is UI-only so far; `/api/insights/custom_dashboards` exists but no dedicated alert-MTTR path found.
